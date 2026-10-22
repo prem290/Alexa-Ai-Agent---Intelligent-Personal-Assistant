@@ -1,0 +1,24 @@
+@"
+
+# Local databases and task data
+*.db
+*.sqlite
+*.sqlite3
+agent_tasks_store.json
+agent_tasks_store_backup.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Frontend dependencies and builds
+node_modules/
+dist/
+
+# Secrets
+.env
+.env.*
+!.env.example
+"@ | Add-Content .gitignore
