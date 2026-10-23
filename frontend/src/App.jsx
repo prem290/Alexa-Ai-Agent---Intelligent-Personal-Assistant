@@ -1,5 +1,7 @@
 
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Activity,
   ArrowUpRight,
@@ -7,7 +9,6 @@ import {
   BookOpen,
   CalendarDays,
   CheckCircle2,
-  ChevronDown,
   Circle,
   Clock3,
   Home,
@@ -21,11 +22,10 @@ import {
   Target,
   Volume2,
   Zap,
+  ChevronDown,
 } from "lucide-react";
 import "./App.css";
 
-// Render backend API URL.
-// You can override it using VITE_API_BASE in Render's frontend environment.
 const API_BASE = (
   import.meta.env.VITE_API_BASE ||
   "https://alexa-ai-agent-intelligent-personal.onrender.com/api"
@@ -44,15 +44,13 @@ async function apiRequest(path, options = {}) {
     });
   } catch {
     throw new Error(
-      "Cannot connect to the backend. Check the Render backend service and CORS configuration."
+      "Cannot connect to the backend. Check the Render service and CORS settings."
     );
   }
 
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(
-      detail || `Request failed with status ${response.status}`
-    );
+    const body = await response.text();
+    throw new Error(body || `Request failed (${response.status})`);
   }
 
   if (response.status === 204) return null;
@@ -65,27 +63,17 @@ async function apiRequest(path, options = {}) {
   return response.json();
 }
 
-function mapBackendTask(task) {
-  const priorityLabels = {
-    urgent: "Urgent",
-    high: "High priority",
-    medium: "Medium",
-    low: "Low",
-  };
-
+function normalizeTask(task) {
   return {
     id: task.id,
     title: task.title || "Untitled task",
-    category: task.description || "Personal task",
-    due: task.due_date || "No deadline",
-    priority:
-      priorityLabels[String(task.priority || "medium").toLowerCase()] ||
-      "Medium",
-    done:
-      task.status === "completed" ||
+    description: task.description || "Personal task",
+    due: task.due_date || task.due || "No deadline",
+    priority: task.priority || "Medium",
+    completed:
       task.completed === true ||
-      task.done === true,
-    raw: task,
+      task.done === true ||
+      String(task.status || "").toLowerCase() === "completed",
   };
 }
 
@@ -96,10 +84,26 @@ const suggestions = [
 ];
 
 const schedule = [
-  ["10:00 AM", "Machine Learning lecture", "10:00–11:30 · Campus"],
-  ["2:00 PM", "Design & Society seminar", "2:00–3:00 · Arts 112"],
-  ["4:00 PM", "Linear regression review", "4:00–5:15 · Study session"],
-  ["6:00 PM", "Finish the ML lab report", "6:00 PM · Study session"],
+  {
+    time: "10:00 AM",
+    title: "Machine Learning lecture",
+    details: "10:00–11:30 · Campus",
+  },
+  {
+    time: "2:00 PM",
+    title: "Design & Society seminar",
+    details: "2:00–3:00 · Arts 112",
+  },
+  {
+    time: "4:00 PM",
+    title: "Linear regression review",
+    details: "4:00–5:15 · Study session",
+  },
+  {
+    time: "6:00 PM",
+    title: "Finish the ML lab report",
+    details: "6:00 PM · Study session",
+  },
 ];
 
 export default function App() {
@@ -109,11 +113,10 @@ export default function App() {
   const [tasksError, setTasksError] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
-  const [conversationId, setConversationId] = useState(null);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
   const [listening, setListening] = useState(false);
-  const [taskActionLoading, setTaskActionLoading] = useState(false);
 
   async function loadTasks() {
     setTasksLoading(true);
@@ -121,15 +124,15 @@ export default function App() {
 
     try {
       const data = await apiRequest("/tasks");
-      const backendTasks = Array.isArray(data)
+      const list = Array.isArray(data)
         ? data
         : Array.isArray(data?.tasks)
           ? data.tasks
           : [];
 
-      setTasks(backendTasks.map(mapBackendTask));
+      setTasks(list.map(normalizeTask));
     } catch (error) {
-      setTasksError(error.message || "Could not load tasks.");
+      setTasksError(error.message || "Unable to load tasks.");
     } finally {
       setTasksLoading(false);
     }
@@ -139,8 +142,10 @@ export default function App() {
     loadTasks();
   }, []);
 
-  const completed = tasks.filter((task) => task.done).length;
-  const progress = tasks.length ? (completed / tasks.length) * 100 : 0;
+  const completedCount = tasks.filter((task) => task.completed).length;
+  const progress = tasks.length
+    ? (completedCount / tasks.length) * 100
+    : 0;
 
   async function sendMessage(text = message) {
     const prompt = text.trim();
@@ -172,16 +177,19 @@ export default function App() {
         setConversationId(data.conversation_id);
       }
 
+      // Support common response field names used by FastAPI agents.
       const answer =
-        data?.response_text ??
-        data?.response ??
-        data?.reply ??
-        data?.message ??
-        (typeof data === "string" ? data : "");
+        typeof data === "string"
+          ? data
+          : data?.response_text ??
+            data?.response ??
+            data?.reply ??
+            data?.answer ??
+            data?.message;
 
       if (typeof answer !== "string" || !answer.trim()) {
         throw new Error(
-          "The backend responded, but no assistant message was found. Check the response format in agent/server.py."
+          "The backend did not return an assistant response. Check the /api/chat response in agent/server.py."
         );
       }
 
@@ -190,37 +198,29 @@ export default function App() {
         { role: "assistant", text: answer },
       ]);
     } catch (error) {
-      setChatError(error.message || "Could not connect to the assistant.");
+      setChatError(error.message || "Unable to get an assistant response.");
     } finally {
       setChatLoading(false);
     }
   }
 
-  async function toggleTask(id) {
-    const task = tasks.find((item) => item.id === id);
-    if (!task || taskActionLoading) return;
-
-    // The backend's task-update endpoint must be implemented before
-    // persistent completion updates can be enabled.
-    const confirmed = window.confirm(
-      `Change the completion status of "${task.title}"? This change may not persist unless your backend supports task updates.`
-    );
-
-    if (!confirmed) return;
-
+  function toggleTask(id) {
+    // UI-only until a task update endpoint is implemented on the backend.
     setTasks((current) =>
-      current.map((item) =>
-        item.id === id ? { ...item, done: !item.done } : item
+      current.map((task) =>
+        task.id === id
+          ? { ...task, completed: !task.completed }
+          : task
       )
+    );
+    setTasksError(
+      "Completion changes are currently local to this page and may not persist after refreshing."
     );
   }
 
-  async function createTask() {
-    const title = window.prompt("What task would you like to add?");
-    if (!title?.trim()) return;
-
+  function createTask() {
     setTasksError(
-      "Task creation is not connected yet. Add a task-creation endpoint to your FastAPI backend to save new tasks."
+      "Task creation is not connected yet. A task-creation endpoint is needed in the backend."
     );
   }
 
@@ -266,7 +266,7 @@ export default function App() {
             <span>{name}</span>
             {name === "Tasks" && (
               <span className="nav-count">
-                {tasks.filter((task) => !task.done).length}
+                {tasks.filter((task) => !task.completed).length}
               </span>
             )}
           </button>
@@ -297,10 +297,7 @@ export default function App() {
             <p>Your personal planning space</p>
           </div>
 
-          <button
-            className="profile"
-            onClick={() => setPage("Settings")}
-          >
+          <button className="profile" onClick={() => setPage("Settings")}>
             <span className="avatar">JD</span>
             <span className="profile-text">
               <strong>Jamie Davis</strong>
@@ -322,10 +319,7 @@ export default function App() {
             <button className="icon-button" aria-label="Search">
               <Search size={17} />
             </button>
-            <button
-              className="icon-button"
-              aria-label="Notifications"
-            >
+            <button className="icon-button" aria-label="Notifications">
               <Bell size={17} />
             </button>
             <button className="workspace-pill">
@@ -344,7 +338,6 @@ export default function App() {
                 <h1>A little clarity for your day.</h1>
                 <p>Your life, organized. Your next move, handled.</p>
               </div>
-
               <button
                 className="primary-button"
                 onClick={() => setPage("Assistant")}
@@ -368,7 +361,6 @@ export default function App() {
                   <Zap size={15} /> Start my focus session
                 </button>
               </div>
-
               <div className="voice-orb">
                 <Volume2 size={30} />
               </div>
@@ -392,21 +384,14 @@ export default function App() {
 
                 <div className="task-list">
                   {tasksLoading && (
-                    <p className="muted">Loading tasks from backend...</p>
+                    <p className="muted">Loading tasks...</p>
                   )}
-
                   {tasksError && (
-                    <p className="muted" role="alert">
-                      {tasksError}
-                    </p>
+                    <p className="muted" role="alert">{tasksError}</p>
                   )}
-
-                  {!tasksLoading &&
-                    !tasksError &&
-                    tasks.length === 0 && (
-                      <p className="muted">No tasks found yet.</p>
-                    )}
-
+                  {!tasksLoading && !tasksError && tasks.length === 0 && (
+                    <p className="muted">No tasks found yet.</p>
+                  )}
                   {tasks.map((task) => (
                     <TaskRow
                       key={task.id}
@@ -418,7 +403,7 @@ export default function App() {
 
                 <div className="task-footer">
                   <span>
-                    {completed} of {tasks.length} tasks completed
+                    {completedCount} of {tasks.length} tasks completed
                   </span>
                   <div className="progress-track">
                     <span style={{ width: `${progress}%` }} />
@@ -430,20 +415,18 @@ export default function App() {
                 <div className="panel-heading">
                   <div>
                     <h3>Room for what matters</h3>
-                    <p>
-                      <span className="sync-dot" /> Your day at a glance
-                    </p>
+                    <p><span className="sync-dot" /> Your day at a glance</p>
                   </div>
                   <MoreHorizontal size={18} />
                 </div>
 
-                {schedule.slice(0, 3).map(([time, title, subtitle]) => (
-                  <div className="timeline-row" key={title}>
-                    <span className="timeline-time">{time}</span>
+                {schedule.slice(0, 3).map((item) => (
+                  <div className="timeline-row" key={item.title}>
+                    <span className="timeline-time">{item.time}</span>
                     <span className="timeline-line" />
                     <div>
-                      <strong>{title}</strong>
-                      <small>{subtitle}</small>
+                      <strong>{item.title}</strong>
+                      <small>{item.details}</small>
                     </div>
                   </div>
                 ))}
@@ -498,7 +481,6 @@ export default function App() {
                   A little context is all it takes. Let&apos;s make a plan.
                 </p>
               </div>
-
               <button
                 className="secondary-button"
                 onClick={startNewConversation}
@@ -510,9 +492,7 @@ export default function App() {
             <div className="chat-layout">
               <div className="chat-main">
                 {chatError && (
-                  <p className="muted" role="alert">
-                    {chatError}
-                  </p>
+                  <p className="muted" role="alert">{chatError}</p>
                 )}
 
                 {messages.length === 0 ? (
@@ -524,8 +504,7 @@ export default function App() {
                       <strong>Hi! I&apos;m LifePilot.</strong>
                       <p>
                         Tell me what&apos;s on your mind. We can plan your
-                        studies, prioritize assignments, or organize your
-                        day.
+                        studies, prioritize assignments, or organize your day.
                       </p>
                     </div>
                   </div>
@@ -540,9 +519,23 @@ export default function App() {
                           <Sparkles size={16} />
                         </span>
                       )}
-                      <div className="message-bubble">{item.text}</div>
+                      <div className="message-bubble">
+                        {item.role === "assistant" ? (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {item.text}
+                          </ReactMarkdown>
+                        ) : (
+                          item.text
+                        )}
+                      </div>
                     </div>
                   ))
+                )}
+
+                {chatLoading && (
+                  <p className="muted" role="status">
+                    LifePilot is thinking...
+                  </p>
                 )}
 
                 <div className="chat-suggestions">
@@ -556,12 +549,6 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-
-                {chatLoading && (
-                  <p className="muted" role="status">
-                    LifePilot is thinking...
-                  </p>
-                )}
 
                 <ChatComposer
                   value={message}
@@ -586,12 +573,8 @@ export default function App() {
                     plan with time set aside.
                   </p>
                   <div className="side-stats">
-                    <strong>
-                      5<small>study sessions</small>
-                    </strong>
-                    <strong>
-                      6h 15m<small>protected time</small>
-                    </strong>
+                    <strong>5<small>study sessions</small></strong>
+                    <strong>6h 15m<small>protected time</small></strong>
                   </div>
                   <button
                     className="primary-button"
@@ -630,16 +613,12 @@ export default function App() {
                   <BookOpen size={13} /> YOUR LEARNING SPACE
                 </span>
                 <h1>A plan that fits your life.</h1>
-                <p>
-                  Exam prep, real classes, and enough room to breathe.
-                </p>
+                <p>Exam prep, real classes, and enough room to breathe.</p>
               </div>
               <button
                 className="primary-button"
                 onClick={() =>
-                  sendMessage(
-                    "Help me adjust my study plan around my deadlines."
-                  )
+                  sendMessage("Help me adjust my study plan around my deadlines.")
                 }
               >
                 <Sparkles size={15} /> Adjust with AI
@@ -744,41 +723,27 @@ export default function App() {
                   <Target size={13} /> YOUR TASKS
                 </span>
                 <h1>One step at a time.</h1>
-                <p>
-                  Make progress without losing sight of what matters.
-                </p>
+                <p>Make progress without losing sight of what matters.</p>
               </div>
-              <button
-                className="primary-button"
-                onClick={createTask}
-                disabled={taskActionLoading}
-              >
+              <button className="primary-button" onClick={createTask}>
                 <Plus size={15} /> Add task
               </button>
             </div>
 
             <section className="panel tasks-panel">
-              {tasksLoading && (
-                <p className="muted">Loading tasks from backend...</p>
-              )}
-
-              {tasksError && (
-                <p className="muted" role="alert">
-                  {tasksError}
-                </p>
-              )}
-
               <div className="panel-heading">
                 <div>
                   <h3>All tasks</h3>
                   <p>
-                    {tasks.filter((task) => !task.done).length} tasks
+                    {tasks.filter((task) => !task.completed).length} tasks
                     remaining
                   </p>
                 </div>
-                <span className="priority">{completed} completed</span>
+                <span className="priority">{completedCount} completed</span>
               </div>
 
+              {tasksLoading && <p className="muted">Loading tasks...</p>}
+              {tasksError && <p className="muted" role="alert">{tasksError}</p>}
               {!tasksLoading && tasks.length === 0 && !tasksError && (
                 <p className="muted">No tasks yet.</p>
               )}
@@ -822,12 +787,12 @@ export default function App() {
 
             <section className="panel">
               <h3>Today's timeline</h3>
-              {schedule.map(([time, title, subtitle]) => (
-                <div className="calendar-event" key={title}>
-                  <span>{time}</span>
+              {schedule.map((item) => (
+                <div className="calendar-event" key={item.title}>
+                  <span>{item.time}</span>
                   <div>
-                    <strong>{title}</strong>
-                    <small>{subtitle}</small>
+                    <strong>{item.title}</strong>
+                    <small>{item.details}</small>
                   </div>
                 </div>
               ))}
@@ -842,24 +807,18 @@ export default function App() {
             <section className="panel">
               <h3>Assistant preferences</h3>
               <p className="muted">
-                Your assistant connects to the deployed FastAPI backend.
-                Voice input and persistent task updates require additional
+                The assistant connects to your deployed FastAPI backend.
+                Voice input and persistent task updates need additional
                 backend integration.
               </p>
-              <p className="muted">
-                API endpoint: {API_BASE}
-              </p>
+              <p className="muted">API endpoint: {API_BASE}</p>
             </section>
           </section>
         )}
 
         <footer className="app-footer">
-          <span>
-            <span className="sync-dot" /> LifePilot workspace ready
-          </span>
-          <span>
-            Built for your next move <Sparkles size={12} />
-          </span>
+          <span><span className="sync-dot" /> LifePilot workspace ready</span>
+          <span>Built for your next move <Sparkles size={12} /></span>
         </footer>
       </main>
     </div>
@@ -868,17 +827,17 @@ export default function App() {
 
 function TaskRow({ task, onToggle }) {
   return (
-    <div className={`task-row ${task.done ? "task-done" : ""}`}>
+    <div className={`task-row ${task.completed ? "task-done" : ""}`}>
       <button
         className="check-button"
         onClick={() => onToggle(task.id)}
         aria-label={
-          task.done
+          task.completed
             ? `Mark ${task.title} incomplete`
             : `Mark ${task.title} complete`
         }
       >
-        {task.done ? (
+        {task.completed ? (
           <CheckCircle2 size={17} />
         ) : (
           <Circle size={17} />
@@ -887,14 +846,15 @@ function TaskRow({ task, onToggle }) {
 
       <div className="task-copy">
         <strong>{task.title}</strong>
-        <small>{task.category}</small>
+        <small>{task.description}</small>
       </div>
 
       <div className="task-meta">
         <span
           className={`priority ${
-            task.priority === "High priority" ||
-            task.priority === "Urgent"
+            ["high", "urgent", "high priority"].includes(
+              String(task.priority).toLowerCase()
+            )
               ? "high"
               : ""
           }`}
@@ -930,7 +890,7 @@ function ChatComposer({
         onChange={(event) => onChange(event.target.value)}
         placeholder={
           listening
-            ? "Voice input is a UI demo for now..."
+            ? "Voice input is not connected yet..."
             : "Ask anything, or tell me what's on your mind..."
         }
         aria-label="Message LifePilot"
